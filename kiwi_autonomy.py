@@ -249,19 +249,21 @@ async def rationalize(
     semantic = mem.data.get("semantic", {})
     episodic = mem.data.get("episodic", [])
 
-    # Annotate semantic entries with staleness
+    # Annotate semantic entries with staleness (uses KiwiMemory's built-in method)
+    semantic_entries = mem.get_semantic_with_staleness()
+    stale_count = sum(1 for e in semantic_entries if e["is_stale"])
     annotated_semantic = []
-    stale_count = 0
-    for topic, entry in semantic.items():
-        content = entry.get("content", "") if isinstance(entry, dict) else str(entry)
-        updated = entry.get("updated", "") if isinstance(entry, dict) else ""
-        is_stale, days_old = compute_staleness(updated, staleness_days)
-        if is_stale:
-            stale_count += 1
-        staleness_label = f" [STALE — {days_old} days old]" if is_stale else f" [{days_old}d old]"
-        annotated_semantic.append(f"• {topic}{staleness_label}: {content[:300]}")
+    for e in semantic_entries:
+        age_label = f" [STALE — {e['days_old']}d old]" if e["is_stale"] else f" [{e['days_old']}d old]"
+        annotated_semantic.append(f"• {e['topic']}{age_label}: {e['content'][:300]}")
 
     semantic_block = "\n".join(annotated_semantic) if annotated_semantic else "(no semantic memory)"
+
+    # Archived episodic (for deeper historical context)
+    archive_stats = mem.archive_stats()
+    archive_block = ""
+    if archive_stats.get("archived_entries", 0) > 0:
+        archive_block = f"\n\n=== ARCHIVED RESEARCH ({archive_stats['archived_entries']} entries) ===\n(searchable via archive)"
 
     # Recent episodic
     recent = episodic[-10:] if episodic else []
@@ -284,7 +286,8 @@ async def rationalize(
         f"=== SEMANTIC MEMORY ({len(semantic)} topics, {stale_count} stale) ===\n"
         f"{semantic_block}\n\n"
         f"=== RECENT EPISODIC HISTORY ({len(recent)} exchanges) ===\n"
-        f"{episodic_block}\n\n"
+        f"{episodic_block}\n"
+        f"{archive_block}\n\n"
         f"=== USER PROFILE ===\n"
         f"{profile_block}\n\n"
         f"=== OPEN QUESTIONS FROM PREVIOUS PASS ===\n"
@@ -421,19 +424,30 @@ async def research_item(
     try:
         from agents.orchestrator import KiwiOrchestrator
         from tools.pubmed import PubMedClient
+        from tools.openalex import OpenAlexClient
         from memory.store import KiwiMemory
         from memory.profile import UserProfile
 
         mem = KiwiMemory()
         profile = UserProfile()
         pubmed = PubMedClient()
+        openalex = OpenAlexClient()
 
         # PubMed pre-fetch
         print(f"    [pubmed] Searching: {query[:80]}...")
         articles = pubmed.search_and_fetch(query, max_results=5, years_back=10)
         pubmed_context = pubmed.build_context_block(articles)
         pubmed_count = len(articles)
+        seen_dois = {a.doi.lower() for a in articles if a.doi}
         print(f"    [pubmed] {pubmed_count} articles fetched")
+
+        # OpenAlex supplementary search (sports nutrition journals)
+        print(f"    [openalex] Searching sports nutrition journals...")
+        oa_works = openalex.search_sports_nutrition(query, max_results=4, years_back=10)
+        oa_unique = [w for w in oa_works if not w.doi or w.doi.lower() not in seen_dois][:3]
+        if oa_unique:
+            pubmed_context += "\n\n" + openalex.build_context_block(oa_unique)
+            print(f"    [openalex] {len(oa_unique)} additional articles")
 
         # Inject existing knowledge for staleness refreshes
         if item.existing_knowledge:
