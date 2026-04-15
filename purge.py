@@ -27,8 +27,9 @@ import anthropic
 MODEL = "claude-opus-4-6"
 
 PROJECTS = {
-    "nutriforge": Path("/home/nelly/nutriforge/backend/app"),
+    "calsanova": Path("/home/nelly/calsanova/backend/app"),
     "kiwi": Path("/home/nelly/kiwi"),
+    "scythene": Path("/home/nelly/scythene/src"),
 }
 
 PURGE_SYSTEM = """You are a code archaeology expert. Given a list of Python files and their import graphs, identify which files are truly dead (unreachable from any entry point).

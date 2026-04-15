@@ -1,0 +1,49 @@
+{"ts": "2026-03-01T06:02:32.745697+00:00", "phase": "scan", "episodic_count": 3, "gaps_found": 5}
+{"ts": "2026-03-01T06:02:41.893784+00:00", "phase": "extract", "source_ts": "2026-02-28T20:43:47.070067", "topic": "truck driver occupational health", "chars": 1444}
+{"ts": "2026-03-01T06:02:53.071102+00:00", "phase": "critique", "topic": "truck driver occupational health", "score": 0.88, "dimensions": {"accuracy": 0.9, "completeness": 0.82, "clarity": 0.93, "coherence": 0.85, "applicability": 0.88}, "attempt": 1}
+{"ts": "2026-03-01T06:02:53.073582+00:00", "phase": "applied", "topic": "truck driver occupational health", "score": 0.88, "source_ts": "2026-02-28T20:43:47.070067", "chars": 1444}
+{"ts": "2026-03-01T06:03:00.137471+00:00", "phase": "extract", "source_ts": "2026-02-28T20:49:41.782237", "topic": "omad and meal frequency", "chars": 1022}
+{"ts": "2026-03-01T06:03:10.390738+00:00", "phase": "critique", "topic": "omad and meal frequency", "score": 0.88, "dimensions": {"accuracy": 0.92, "completeness": 0.82, "clarity": 0.93, "coherence": 0.9, "applicability": 0.82}, "attempt": 1}
+{"ts": "2026-03-01T06:03:10.391865+00:00", "phase": "applied", "topic": "omad and meal frequency", "score": 0.88, "source_ts": "2026-02-28T20:49:41.782237", "chars": 1022}
+{"ts": "2026-03-01T06:03:17.025727+00:00", "phase": "extract", "source_ts": "2026-03-01T00:13:20.651816", "topic": "protein timing for hypertrophy", "chars": 692}
+{"ts": "2026-03-01T06:03:31.739426+00:00", "phase": "critique", "topic": "protein timing for hypertrophy", "score": 0.82, "dimensions": {"accuracy": 0.95, "completeness": 0.6, "clarity": 0.92, "coherence": 0.85, "applicability": 0.8}, "attempt": 1}
+{"ts": "2026-03-01T06:03:31.740164+00:00", "phase": "applied", "topic": "protein timing for hypertrophy", "score": 0.82, "source_ts": "2026-03-01T00:13:20.651816", "chars": 692}
+{"ts": "2026-03-01T06:03:37.270453+00:00", "phase": "extract", "source_ts": "2026-03-01T00:13:20.651816", "topic": "protein intake for body recomposition", "chars": 778}
+{"ts": "2026-03-01T06:03:48.039994+00:00", "phase": "critique", "topic": "protein intake for body recomposition", "score": 0.88, "dimensions": {"accuracy": 0.95, "completeness": 0.8, "clarity": 0.92, "coherence": 0.85, "applicability": 0.85}, "attempt": 1}
+{"ts": "2026-03-01T06:03:48.040915+00:00", "phase": "applied", "topic": "protein intake for body recomposition", "score": 0.88, "source_ts": "2026-03-01T00:13:20.651816", "chars": 778}
+{"ts": "2026-03-01T06:03:56.991636+00:00", "phase": "extract", "source_ts": "2026-02-28T20:43:47.070067", "topic": "practical weight loss strategies", "chars": 1375}
+{"ts": "2026-03-01T06:04:12.064847+00:00", "phase": "critique", "topic": "practical weight loss strategies", "score": 0.87, "dimensions": {"accuracy": 0.9, "completeness": 0.75, "clarity": 0.92, "coherence": 0.88, "applicability": 0.9}, "attempt": 1}
+{"ts": "2026-03-01T06:04:12.065605+00:00", "phase": "applied", "topic": "practical weight loss strategies", "score": 0.87, "source_ts": "2026-02-28T20:43:47.070067", "chars": 1375}
+{"ts": "2026-03-01T06:04:12.065671+00:00", "phase": "pass_complete", "entries_applied": 5, "entries_rejected": 0, "elapsed_s": 119.9, "dry_run": false}
+{"ts": "2026-03-02T22:05:31.714616+00:00", "phase": "scan", "episodic_count": 3, "gaps_found": 3}
+{"ts": "2026-03-02T22:05:48.917896+00:00", "phase": "extract", "source_ts": "2026-03-02T16:58:10.096309", "topic": "shift work sleep and circadian rhythm optimization", "chars": 2000}
+{"ts": "2026-03-03T02:44:59.457497+00:00", "phase": "critique", "topic": "shift work sleep and circadian rhythm optimization", "score": 0.82, "dimensions": {"accuracy": 0.9, "completeness": 0.7, "clarity": 0.88, "coherence": 0.85, "applicability": 0.82}, "attempt": 1}
+{"ts": "2026-03-03T02:44:59.458660+00:00", "phase": "applied", "topic": "shift work sleep and circadian rhythm optimization", "score": 0.82, "source_ts": "2026-03-02T16:58:10.096309", "chars": 2000}
+{"ts": "2026-03-03T02:45:16.309520+00:00", "phase": "extract", "source_ts": "2026-03-02T17:05:09.491673", "topic": "minimal equipment resistance training programming", "chars": 2000}
+{"ts": "2026-03-03T02:45:32.292603+00:00", "phase": "critique", "topic": "minimal equipment resistance training programming", "score": 0.82, "dimensions": {"accuracy": 0.88, "completeness": 0.72, "clarity": 0.9, "coherence": 0.85, "applicability": 0.82}, "attempt": 1}
+{"ts": "2026-03-03T02:45:32.293579+00:00", "phase": "applied", "topic": "minimal equipment resistance training programming", "score": 0.82, "source_ts": "2026-03-02T17:05:09.491673", "chars": 2000}
+{"ts": "2026-03-03T02:45:41.606941+00:00", "phase": "extract", "source_ts": "2026-03-02T17:01:37.622344", "topic": "omad single-meal protein absorption and mps", "chars": 1494}
+{"ts": "2026-03-03T02:45:56.603065+00:00", "phase": "critique", "topic": "omad single-meal protein absorption and mps", "score": 0.87, "dimensions": {"accuracy": 0.88, "completeness": 0.85, "clarity": 0.92, "coherence": 0.85, "applicability": 0.82}, "attempt": 1}
+{"ts": "2026-03-03T02:45:56.604315+00:00", "phase": "applied", "topic": "omad single-meal protein absorption and mps", "score": 0.87, "source_ts": "2026-03-02T17:01:37.622344", "chars": 1494}
+{"ts": "2026-03-03T02:45:56.604408+00:00", "phase": "pass_complete", "entries_applied": 3, "entries_rejected": 0, "elapsed_s": 16847.1, "dry_run": false}
+{"ts": "2026-03-03T03:26:37.168635+00:00", "phase": "scan", "episodic_count": 3, "gaps_found": 3}
+{"ts": "2026-03-03T03:26:45.657452+00:00", "phase": "extract", "source_ts": "2026-03-02T22:18:13.461625", "topic": "sleep restriction effects on body composition during caloric deficit", "chars": 1284}
+{"ts": "2026-03-03T03:27:02.261340+00:00", "phase": "critique", "topic": "sleep restriction effects on body composition during caloric deficit", "score": 0.62, "dimensions": {"accuracy": 0.75, "completeness": 0.45, "clarity": 0.8, "coherence": 0.75, "applicability": 0.55}, "attempt": 1}
+{"ts": "2026-03-03T03:27:40.849501+00:00", "phase": "critique", "topic": "sleep restriction effects on body composition during caloric deficit", "score": 0.82, "dimensions": {"accuracy": 0.88, "completeness": 0.78, "clarity": 0.9, "coherence": 0.82, "applicability": 0.72}, "attempt": 2}
+{"ts": "2026-03-03T03:27:40.851003+00:00", "phase": "applied", "topic": "sleep restriction effects on body composition during caloric deficit", "score": 0.82, "source_ts": "2026-03-02T22:18:13.461625", "chars": 2000}
+{"ts": "2026-03-03T03:27:54.210296+00:00", "phase": "extract", "source_ts": "2026-03-02T22:22:08.442476", "topic": "tdee estimation for sedentary occupation with resistance training", "chars": 1964}
+{"ts": "2026-03-03T03:28:08.806304+00:00", "phase": "critique", "topic": "tdee estimation for sedentary occupation with resistance training", "score": 0.88, "dimensions": {"accuracy": 0.88, "completeness": 0.85, "clarity": 0.93, "coherence": 0.88, "applicability": 0.9}, "attempt": 1}
+{"ts": "2026-03-03T03:28:08.807766+00:00", "phase": "applied", "topic": "tdee estimation for sedentary occupation with resistance training", "score": 0.88, "source_ts": "2026-03-02T22:22:08.442476", "chars": 1964}
+{"ts": "2026-03-03T03:28:23.034582+00:00", "phase": "extract", "source_ts": "2026-03-02T22:26:13.330739", "topic": "truck cab omad meal construction and food logistics", "chars": 2000}
+{"ts": "2026-03-03T03:28:40.647993+00:00", "phase": "critique", "topic": "truck cab omad meal construction and food logistics", "score": 0.68, "dimensions": {"accuracy": 0.85, "completeness": 0.5, "clarity": 0.8, "coherence": 0.85, "applicability": 0.6}, "attempt": 1}
+{"ts": "2026-03-03T03:29:53.460912+00:00", "phase": "critique", "topic": "truck cab omad meal construction and food logistics", "score": 0.82, "dimensions": {"accuracy": 0.78, "completeness": 0.75, "clarity": 0.92, "coherence": 0.88, "applicability": 0.9}, "attempt": 2}
+{"ts": "2026-03-03T03:29:53.462464+00:00", "phase": "applied", "topic": "truck cab omad meal construction and food logistics", "score": 0.82, "source_ts": "2026-03-02T22:26:13.330739", "chars": 1972}
+{"ts": "2026-03-03T03:29:53.462608+00:00", "phase": "pass_complete", "entries_applied": 3, "entries_rejected": 0, "elapsed_s": 220.1, "dry_run": false}
+{"ts": "2026-03-03T04:20:51.154209+00:00", "phase": "scan", "episodic_count": 2, "gaps_found": 2}
+{"ts": "2026-03-03T04:21:01.118928+00:00", "phase": "extract", "source_ts": "2026-03-02T23:06:06.715749", "topic": "neat suppression and adaptive thermogenesis during caloric deficit", "chars": 1663}
+{"ts": "2026-03-03T04:21:20.488060+00:00", "phase": "critique", "topic": "neat suppression and adaptive thermogenesis during caloric deficit", "score": 0.82, "dimensions": {"accuracy": 0.85, "completeness": 0.7, "clarity": 0.92, "coherence": 0.88, "applicability": 0.72}, "attempt": 1}
+{"ts": "2026-03-03T04:21:20.489649+00:00", "phase": "applied", "topic": "neat suppression and adaptive thermogenesis during caloric deficit", "score": 0.82, "source_ts": "2026-03-02T23:06:06.715749", "chars": 1663}
+{"ts": "2026-03-03T04:21:28.771701+00:00", "phase": "extract", "source_ts": "2026-03-02T23:20:37.203083", "topic": "self-monitoring tdee recalibration during prolonged deficit", "chars": 1388}
+{"ts": "2026-03-03T04:21:42.536013+00:00", "phase": "critique", "topic": "self-monitoring tdee recalibration during prolonged deficit", "score": 0.88, "dimensions": {"accuracy": 0.88, "completeness": 0.85, "clarity": 0.92, "coherence": 0.9, "applicability": 0.88}, "attempt": 1}
+{"ts": "2026-03-03T04:21:42.537756+00:00", "phase": "applied", "topic": "self-monitoring tdee recalibration during prolonged deficit", "score": 0.88, "source_ts": "2026-03-02T23:20:37.203083", "chars": 1388}
+{"ts": "2026-03-03T04:21:42.537856+00:00", "phase": "pass_complete", "entries_applied": 2, "entries_rejected": 0, "elapsed_s": 65.3, "dry_run": false}
