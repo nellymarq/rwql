@@ -44,9 +44,17 @@ MODEL_TRIAGE = "claude-sonnet-4-6"       # Sonnet for scan triage (cheaper)
 MODEL_CRITIQUE = "claude-sonnet-4-6"     # Sonnet for critique scoring (cheaper)
 REFINEMENT_THRESHOLD = 0.72
 LOG_FILE = Path(__file__).parent / "rwql_log.jsonl"
+MEMORY_FILE = Path(__file__).parent / "rwql_memory.json"
 LOOP_INTERVAL_SECONDS = 1800  # 30 min default
 MAX_PATCHES_PER_PASS = 5
 MAX_FILE_CHARS = 12000  # Max chars to send in prompts (Opus handles large context well)
+
+# Cost rates per million tokens (USD)
+COST_RATES = {
+    MODEL_PATCH: {"input": 15.0, "output": 75.0},
+    MODEL_TRIAGE: {"input": 3.0, "output": 15.0},
+    MODEL_CRITIQUE: {"input": 3.0, "output": 15.0},
+}
 
 # Paths/patterns to skip during scanning
 SCAN_EXCLUDES = {
@@ -137,14 +145,29 @@ Severity rules:
 
 PATCH_SYSTEM = """You are RWQL's patch engineer — you write precise, minimal code fixes.
 
-Given an issue description and the current file content, produce ONLY the fixed content.
+Given an issue description and the current file content, produce a list of search/replace blocks.
+Each block specifies exact lines to find and their replacement.
+
+Rules:
 - Make the smallest change that fixes the issue
 - Never add features beyond the fix
 - Never remove code unless it's provably dead/unused
 - Maintain existing code style exactly
-- For TypeScript/React files, preserve all existing imports and type annotations
+- The "search" string must match EXACTLY in the file (whitespace-sensitive)
+- Include enough surrounding context in "search" to be unique in the file
 
-Respond with the complete fixed file content. No preamble, no explanation, no markdown fences."""
+Respond ONLY with a JSON object:
+{
+  "changes": [
+    {
+      "search": "exact lines to find in the file",
+      "replace": "replacement lines"
+    }
+  ],
+  "explanation": "one-line summary of what was changed"
+}
+
+If removing code, set "replace" to an empty string. Keep the number of changes minimal."""
 
 CRITIQUE_SYSTEM = """You are RWQL's critic — the Ralph Wiggum Loop evaluator for code patches.
 
@@ -179,6 +202,82 @@ def log_event(event: dict):
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
     return entry
+
+
+# ── Cost Tracking ───────────────────────────────────────────────────────────
+
+class CostTracker:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def record(self, model: str, response):
+        usage = getattr(response, "usage", None)
+        if usage:
+            self.calls.append({
+                "model": model,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            })
+
+    def summary(self) -> dict:
+        total_input = sum(c["input_tokens"] for c in self.calls)
+        total_output = sum(c["output_tokens"] for c in self.calls)
+        total_cost = 0.0
+        for c in self.calls:
+            rates = COST_RATES.get(c["model"], {"input": 3.0, "output": 15.0})
+            total_cost += (c["input_tokens"] / 1_000_000) * rates["input"]
+            total_cost += (c["output_tokens"] / 1_000_000) * rates["output"]
+        return {
+            "api_calls": len(self.calls),
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "estimated_cost_usd": round(total_cost, 4),
+        }
+
+
+# ── Historical Memory ──────────────────────────────────────────────────────
+
+def load_memory() -> dict:
+    if MEMORY_FILE.exists():
+        try:
+            return json.loads(MEMORY_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {
+        "patches_applied": [],
+        "patches_reverted": [],
+        "false_positives": [],
+        "project_patterns": {},
+    }
+
+
+def save_memory(memory: dict):
+    MEMORY_FILE.write_text(json.dumps(memory, indent=2, default=str))
+
+
+def memory_context_for_prompt(memory: dict, project: str) -> str:
+    lines = []
+    applied = [p for p in memory.get("patches_applied", []) if p.get("project") == project]
+    reverted = [p for p in memory.get("patches_reverted", []) if p.get("project") == project]
+    false_pos = memory.get("false_positives", [])
+    patterns = memory.get("project_patterns", {}).get(project, "")
+
+    if applied:
+        recent = applied[-5:]
+        lines.append(f"Recently applied patches ({len(applied)} total, showing last {len(recent)}):")
+        for p in recent:
+            lines.append(f"  - {p.get('file', '?')}: {p.get('issue_id', '?')} (score {p.get('score', '?')})")
+    if reverted:
+        lines.append(f"Reverted patches ({len(reverted)} — these fixes FAILED verification):")
+        for p in reverted[-3:]:
+            lines.append(f"  - {p.get('file', '?')}: {p.get('reason', '?')}")
+    if false_pos:
+        lines.append(f"Known false positives (do NOT flag these again):")
+        for fp in false_pos[-5:]:
+            lines.append(f"  - {fp.get('description', '?')}")
+    if patterns:
+        lines.append(f"Project notes: {patterns}")
+    return "\n".join(lines) if lines else ""
 
 
 def run_cmd(cmd: list[str], cwd: Path, env: dict | None = None,
@@ -332,7 +431,8 @@ def resolve_file_path(config: dict, relative_path: str) -> Path | None:
 # ── Scan Phase ───────────────────────────────────────────────────────────────
 
 async def scan_project(project_name: str, config: dict,
-                       client: anthropic.AsyncAnthropic) -> list[dict]:
+                       client: anthropic.AsyncAnthropic,
+                       cost_tracker: "CostTracker | None" = None) -> list[dict]:
     """Run all scanners and ask Claude to triage the findings."""
     backend = config["backend"]
     frontend = config.get("frontend")
@@ -441,14 +541,20 @@ async def scan_project(project_name: str, config: dict,
 
     combined = "\n\n".join(findings)
 
-    # Ask Claude to triage
+    # Ask Claude to triage (with memory context)
+    memory = load_memory()
+    mem_ctx = memory_context_for_prompt(memory, project_name)
+    memory_block = f"\n\n=== RWQL MEMORY ===\n{mem_ctx}" if mem_ctx else ""
+
     print(f"  [scan] Claude triaging {project_name} findings...")
     response = await client.messages.create(
         model=MODEL_TRIAGE,
         max_tokens=4096,
         system=SCAN_SYSTEM,
-        messages=[{"role": "user", "content": f"Project: {project_name}\n\n{combined}"}],
+        messages=[{"role": "user", "content": f"Project: {project_name}\n\n{combined}{memory_block}"}],
     )
+    if cost_tracker:
+        cost_tracker.record(MODEL_TRIAGE, response)
 
     text = next((b.text for b in response.content if hasattr(b, "text")), "")
 
@@ -473,21 +579,34 @@ async def scan_project(project_name: str, config: dict,
 
 # ── Patch Phase ──────────────────────────────────────────────────────────────
 
+def apply_search_replace(content: str, changes: list[dict]) -> str | None:
+    """Apply search/replace blocks to file content. Returns None if any search fails."""
+    result = content
+    for change in changes:
+        search = change.get("search", "")
+        replace = change.get("replace", "")
+        if not search:
+            continue
+        if search not in result:
+            return None
+        result = result.replace(search, replace, 1)
+    return result
+
+
 async def generate_patch(issue: dict, project_config: dict,
-                         client: anthropic.AsyncAnthropic) -> str | None:
-    """Generate a code patch for an issue."""
+                         client: anthropic.AsyncAnthropic,
+                         cost_tracker: "CostTracker | None" = None) -> str | None:
+    """Generate a code patch for an issue using search/replace format."""
     file_path = resolve_file_path(project_config, issue.get("file", ""))
     if not file_path:
         return None
 
     current_content = file_path.read_text(errors="ignore")
-    # Truncate very large files but try to include the relevant section
     content_for_prompt = current_content
     if len(content_for_prompt) > MAX_FILE_CHARS:
         target_line = issue.get("line", 0)
         if target_line > 0:
             lines = content_for_prompt.splitlines(keepends=True)
-            # Center window around the target line
             start = max(0, target_line - 100)
             end = min(len(lines), target_line + 100)
             content_for_prompt = (
@@ -499,7 +618,7 @@ async def generate_patch(issue: dict, project_config: dict,
 
     response = await client.messages.create(
         model=MODEL_PATCH,
-        max_tokens=16000,
+        max_tokens=8000,
         thinking={"type": "adaptive"},
         system=PATCH_SYSTEM,
         messages=[{
@@ -518,15 +637,39 @@ Current file content:
 ```"""
         }],
     )
+    if cost_tracker:
+        cost_tracker.record(MODEL_PATCH, response)
 
-    patch = next((b.text for b in response.content if hasattr(b, "text")), "").strip()
+    text = next((b.text for b in response.content if hasattr(b, "text")), "").strip()
 
-    # Strip any accidental markdown fences
-    if patch.startswith("```"):
-        patch = re.sub(r"^```\w*\n?", "", patch)
-        patch = re.sub(r"\n?```$", "", patch)
+    # Parse search/replace JSON
+    try:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            data = json.loads(m.group())
+            changes = data.get("changes", [])
+            if changes:
+                patched = apply_search_replace(current_content, changes)
+                if patched is not None:
+                    explanation = data.get("explanation", "")
+                    if explanation:
+                        print(f"    [patch] {explanation}")
+                    return patched
+                else:
+                    print(f"    [patch] Search/replace failed — search string not found in file")
+    except (json.JSONDecodeError, AttributeError):
+        pass
 
-    return patch if patch else None
+    # Fallback: if model returned raw file content instead of JSON
+    if text and not text.startswith("{"):
+        if text.startswith("```"):
+            text = re.sub(r"^```\w*\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+        if text:
+            print(f"    [patch] Fell back to full-file output (model didn't use search/replace)")
+            return text
+
+    return None
 
 
 # ── Ralph Wiggum Loop ────────────────────────────────────────────────────────
@@ -537,6 +680,7 @@ async def ralph_wiggum_loop(
     original_content: str,
     client: anthropic.AsyncAnthropic,
     max_refinements: int = 4,
+    cost_tracker: "CostTracker | None" = None,
 ) -> tuple[str, float, dict]:
     """
     Critique a patch and refine it if score < REFINEMENT_THRESHOLD.
@@ -546,9 +690,8 @@ async def ralph_wiggum_loop(
     final_score = 0.0
     final_critique: dict = {}
 
-    # Truncate for prompt to avoid token bloat
-    orig_for_prompt = original_content[:MAX_FILE_CHARS]
-    patch_for_prompt = current_patch[:MAX_FILE_CHARS]
+    diff = generate_unified_diff(original_content, current_patch, issue.get("file", ""))
+    diff_for_prompt = diff[:MAX_FILE_CHARS] if diff else "(no diff — identical content)"
 
     for attempt in range(max_refinements + 1):
         critique_response = await client.messages.create(
@@ -559,17 +702,14 @@ async def ralph_wiggum_loop(
                 "role": "user",
                 "content": f"""Issue: {issue['description']}
 
-Original file:
+Diff (unified):
 ```
-{orig_for_prompt}
-```
-
-Proposed patch:
-```
-{patch_for_prompt}
+{diff_for_prompt}
 ```"""
             }],
         )
+        if cost_tracker:
+            cost_tracker.record(MODEL_CRITIQUE, critique_response)
 
         critique_text = next(
             (b.text for b in critique_response.content if hasattr(b, "text")), ""
@@ -592,12 +732,12 @@ Proposed patch:
                         or attempt == max_refinements):
                     break
 
-                # Refine using Opus
                 print(f"    [rwl] Score below threshold "
                       f"({final_score:.2f} < {REFINEMENT_THRESHOLD}), refining...")
+                orig_for_prompt = original_content[:MAX_FILE_CHARS]
                 refinement_response = await client.messages.create(
                     model=MODEL_PATCH,
-                    max_tokens=16000,
+                    max_tokens=8000,
                     thinking={"type": "adaptive"},
                     system=PATCH_SYSTEM,
                     messages=[{
@@ -614,23 +754,45 @@ Original file:
 {orig_for_prompt}
 ```
 
-Previous (rejected) patch:
+Previous diff:
 ```
-{patch_for_prompt}
+{diff_for_prompt}
 ```
 
-Generate an improved patch that addresses the critical issues."""
+Generate improved search/replace blocks that address the critical issues."""
                     }],
                 )
-                current_patch = next(
+                if cost_tracker:
+                    cost_tracker.record(MODEL_PATCH, refinement_response)
+
+                refined_text = next(
                     (b.text for b in refinement_response.content if hasattr(b, "text")),
-                    current_patch,
+                    "",
                 ).strip()
 
-                if current_patch.startswith("```"):
-                    current_patch = re.sub(r"^```\w*\n?", "", current_patch)
-                    current_patch = re.sub(r"\n?```$", "", current_patch)
-                patch_for_prompt = current_patch[:MAX_FILE_CHARS]
+                # Try to parse search/replace from refinement
+                try:
+                    rm = re.search(r"\{.*\}", refined_text, re.DOTALL)
+                    if rm:
+                        rdata = json.loads(rm.group())
+                        rchanges = rdata.get("changes", [])
+                        if rchanges:
+                            refined = apply_search_replace(original_content, rchanges)
+                            if refined is not None:
+                                current_patch = refined
+                            else:
+                                print(f"    [rwl] Refinement search/replace failed")
+                except (json.JSONDecodeError, AttributeError):
+                    # Fallback: raw file content
+                    if refined_text and not refined_text.startswith("{"):
+                        if refined_text.startswith("```"):
+                            refined_text = re.sub(r"^```\w*\n?", "", refined_text)
+                            refined_text = re.sub(r"\n?```$", "", refined_text)
+                        if refined_text:
+                            current_patch = refined_text
+
+                diff = generate_unified_diff(original_content, current_patch, issue.get("file", ""))
+                diff_for_prompt = diff[:MAX_FILE_CHARS] if diff else "(no diff)"
         except (json.JSONDecodeError, ValueError):
             break
 
@@ -730,6 +892,8 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
     """One full quality pass: scan → patch → critique → apply → report."""
     start = time.time()
     all_results = []
+    cost_tracker = CostTracker()
+    memory = load_memory()
 
     for project_name in projects:
         if project_name not in PROJECTS:
@@ -742,7 +906,7 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
         print(f"{'='*60}")
 
         # 1. Scan
-        issues = await scan_project(project_name, config, client)
+        issues = await scan_project(project_name, config, client, cost_tracker)
         if not issues:
             print(f"  No issues found in {project_name} — clean!")
             continue
@@ -772,14 +936,15 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
 
             # Generate patch
             print(f"    [patch] Generating fix...")
-            patch = await generate_patch(issue, config, client)
+            patch = await generate_patch(issue, config, client, cost_tracker)
             if not patch:
                 print(f"    [skip] No patch generated")
                 continue
 
             # Ralph Wiggum Loop
             final_patch, score, critique = await ralph_wiggum_loop(
-                issue, patch, original, client
+                issue, patch, original, client,
+                cost_tracker=cost_tracker,
             )
 
             if score < 0.5:
@@ -813,9 +978,15 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
                         "reason": "verification_failed",
                         "details": details[:500],
                     })
+                    memory["patches_reverted"].append({
+                        "project": project_name,
+                        "file": str(file_path),
+                        "issue_id": issue.get("id"),
+                        "reason": "verification_failed",
+                        "date": datetime.now(timezone.utc).isoformat(),
+                    })
                 else:
                     print(f"    [success] Patch applied, verified (score={score:.2f})")
-                    # Git commit
                     git_commit_patch(config, file_path, issue, score)
                     log_event({
                         "phase": "patch_applied",
@@ -825,7 +996,13 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
                         "score": score,
                         "critique": critique,
                     })
-                    # Clean up backup
+                    memory["patches_applied"].append({
+                        "project": project_name,
+                        "file": str(file_path),
+                        "issue_id": issue.get("id"),
+                        "score": score,
+                        "date": datetime.now(timezone.utc).isoformat(),
+                    })
                     backup = file_path.with_suffix(file_path.suffix + ".rwql_backup")
                     if backup.exists():
                         backup.unlink()
@@ -837,11 +1014,20 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
                 "applied": applied and not dry_run,
             })
 
+    # Persist memory
+    save_memory(memory)
+
+    # Cost summary
+    costs = cost_tracker.summary()
     elapsed = time.time() - start
     applied_count = sum(1 for r in all_results if r["applied"])
+
     print(f"\n{'='*60}")
     print(f"  RWQL Pass complete in {elapsed:.1f}s")
     print(f"  Patches attempted: {len(all_results)} | Applied: {applied_count}")
+    print(f"  API: {costs['api_calls']} calls | "
+          f"{costs['input_tokens']:,} in / {costs['output_tokens']:,} out | "
+          f"~${costs['estimated_cost_usd']:.4f}")
     print(f"{'='*60}\n")
 
     log_event({
@@ -851,6 +1037,7 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
         "patches_applied": applied_count,
         "elapsed_s": round(elapsed, 1),
         "dry_run": dry_run,
+        "cost": costs,
     })
 
 
