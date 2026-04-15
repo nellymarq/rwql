@@ -1298,6 +1298,174 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
     generate_report(projects_data, costs, elapsed, dry_run)
 
 
+async def run_scan_only(projects: list[str]):
+    """Run all computational checks without API calls. Outputs findings to report."""
+    start = time.time()
+    projects_data = []
+
+    for project_name in projects:
+        if project_name not in PROJECTS:
+            print(f"[!] Unknown project: {project_name}")
+            continue
+
+        config = PROJECTS[project_name]
+        backend = config["backend"]
+        frontend = config.get("frontend")
+        venv = config.get("venv")
+
+        print(f"\n{'='*60}")
+        print(f"  RWQL Scan: {project_name}")
+        print(f"{'='*60}")
+
+        findings = []
+        issue_count = 0
+
+        # Tests
+        if config.get("test_cmd"):
+            print(f"  [scan] Running tests...")
+            rc, stdout, stderr = run_cmd(config["test_cmd"], cwd=backend, venv=venv)
+            if rc != 0:
+                combined = filter_flaky_tests(f"{stdout}\n{stderr}")
+                findings.append(("TESTS", "FAIL", combined[-1000:]))
+                issue_count += 1
+            else:
+                findings.append(("TESTS", "PASS", stdout[-200:]))
+
+        # Typecheck
+        if frontend and config.get("typecheck_cmd"):
+            print(f"  [scan] Running typecheck...")
+            rc, stdout, stderr = run_cmd(config["typecheck_cmd"], cwd=frontend)
+            if rc != 0:
+                findings.append(("TYPECHECK", "FAIL", f"{stderr[-2000:]}\n{stdout[-500:]}"))
+                issue_count += 1
+            else:
+                findings.append(("TYPECHECK", "PASS", ""))
+
+        # Lint
+        if config.get("lint_cmd"):
+            print(f"  [scan] Running lint...")
+            lint_cwd = config.get("lint_cwd", config["root"])
+            rc, stdout, stderr = run_cmd(config["lint_cmd"], cwd=lint_cwd)
+            if stdout.strip() and stdout.strip() != "[]":
+                try:
+                    lint_issues = json.loads(stdout)
+                    lint_text = "\n".join(
+                        f"  {i['filename']}:{i['location']['row']}: [{i['code']}] {i['message']}"
+                        for i in lint_issues[:30]
+                    )
+                    findings.append(("LINT", f"{len(lint_issues)} issues", lint_text))
+                    issue_count += len(lint_issues)
+                except json.JSONDecodeError:
+                    output = (stdout + stderr).strip()
+                    if output and "No ESLint" not in output:
+                        findings.append(("LINT", "OUTPUT", output[:2000]))
+            else:
+                findings.append(("LINT", "PASS", ""))
+
+        # Security (bandit)
+        if config.get("bandit_cmd") and shutil.which("bandit"):
+            print(f"  [scan] Running security scan...")
+            rc, stdout, stderr = run_cmd(config["bandit_cmd"], cwd=backend, venv=venv)
+            if stdout.strip():
+                try:
+                    bandit_data = json.loads(stdout)
+                    results = bandit_data.get("results", [])
+                    if results:
+                        sec_text = "\n".join(
+                            f"  {r['filename']}:{r['line_number']}: [{r['test_id']}] "
+                            f"({r['issue_severity']}) {r['issue_text']}"
+                            for r in results[:20]
+                        )
+                        findings.append(("SECURITY", f"{len(results)} issues", sec_text))
+                        issue_count += len(results)
+                    else:
+                        findings.append(("SECURITY", "PASS", ""))
+                except json.JSONDecodeError:
+                    findings.append(("SECURITY", "PASS", ""))
+
+        # Dead imports — Python
+        print(f"  [scan] Analyzing imports...")
+        dead_py = find_dead_imports_py(backend)
+        if "No obviously unused" not in dead_py:
+            py_count = len(dead_py.strip().splitlines())
+            findings.append(("DEAD PYTHON IMPORTS", f"{py_count} found", dead_py))
+            issue_count += py_count
+        else:
+            findings.append(("DEAD PYTHON IMPORTS", "CLEAN", ""))
+
+        # Dead imports — TypeScript
+        if frontend:
+            src_dir = frontend / "src" if (frontend / "src").exists() else frontend
+            dead_ts = find_dead_imports_ts(src_dir)
+            if "No obviously unused" not in dead_ts:
+                ts_count = len(dead_ts.strip().splitlines())
+                findings.append(("DEAD TS/TSX IMPORTS", f"{ts_count} found", dead_ts))
+                issue_count += ts_count
+            else:
+                findings.append(("DEAD TS/TSX IMPORTS", "CLEAN", ""))
+
+        # Packages
+        for pkg in config.get("packages", []):
+            if pkg.exists():
+                print(f"  [scan] Analyzing package: {pkg.name}...")
+                dead_pkg = find_dead_imports_ts(pkg / "src" if (pkg / "src").exists() else pkg)
+                if "No obviously unused" not in dead_pkg:
+                    pkg_count = len(dead_pkg.strip().splitlines())
+                    findings.append((f"DEAD IMPORTS ({pkg.name})", f"{pkg_count} found", dead_pkg))
+                    issue_count += pkg_count
+
+        # Empty modules
+        empty_py = find_empty_modules(backend, ("*.py",))
+        if "No effectively empty" not in empty_py:
+            findings.append(("EMPTY PYTHON MODULES", "found", empty_py))
+
+        if frontend:
+            src_dir = frontend / "src" if (frontend / "src").exists() else frontend
+            empty_ts = find_empty_modules(src_dir, ("*.tsx", "*.ts"))
+            if "No effectively empty" not in empty_ts:
+                findings.append(("EMPTY TS/TSX MODULES", "found", empty_ts))
+
+        # Print results
+        print(f"\n  Results for {project_name}: {issue_count} issues")
+        print(f"  {'-'*50}")
+        for category, status, detail in findings:
+            icon = "✓" if status == "PASS" or status == "CLEAN" else "✗"
+            print(f"  {icon} {category}: {status}")
+            if detail and status not in ("PASS", "CLEAN", ""):
+                for line in detail.splitlines()[:10]:
+                    print(f"    {line}")
+                total = len(detail.splitlines())
+                if total > 10:
+                    print(f"    ... ({total - 10} more)")
+
+        projects_data.append({
+            "name": project_name,
+            "issues": [{"severity": "info", "description": f"{c}: {s}", "detail": d}
+                       for c, s, d in findings if s not in ("PASS", "CLEAN", "")],
+            "results": [],
+            "regressions": [],
+        })
+
+    elapsed = time.time() - start
+    print(f"\n{'='*60}")
+    print(f"  Scan complete in {elapsed:.1f}s")
+    print(f"  No API calls made (--scan-only mode)")
+    print(f"{'='*60}\n")
+
+    generate_report(
+        projects_data,
+        {"api_calls": 0, "input_tokens": 0, "output_tokens": 0, "estimated_cost_usd": 0},
+        elapsed,
+        dry_run=True,
+    )
+
+    log_event({
+        "phase": "scan_only_complete",
+        "projects": [p["name"] for p in projects_data],
+        "elapsed_s": round(elapsed, 1),
+    })
+
+
 async def main():
     parser = argparse.ArgumentParser(description="RWQL — Ralph Wiggum Quality Loop")
     parser.add_argument(
@@ -1308,16 +1476,24 @@ async def main():
                         help="Print changes without applying")
     parser.add_argument("--once", action="store_true",
                         help="Run one pass and exit")
+    parser.add_argument("--scan-only", action="store_true",
+                        help="Run scans only (no API calls, no patching). Outputs findings to report.")
     args = parser.parse_args()
+
+    projects = list(PROJECTS.keys()) if args.project == "all" else [args.project]
+
+    if args.scan_only:
+        print(f"RWQL — Scan Only Mode (no API calls)")
+        print(f"Projects: {', '.join(projects)}")
+        await run_scan_only(projects)
+        return
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("Error: ANTHROPIC_API_KEY not set")
+        print("Error: ANTHROPIC_API_KEY not set (use --scan-only to skip API calls)")
         sys.exit(1)
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
-
-    projects = list(PROJECTS.keys()) if args.project == "all" else [args.project]
 
     print(f"RWQL — Ralph Wiggum Quality Loop")
     print(f"Projects: {', '.join(projects)}")
