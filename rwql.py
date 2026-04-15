@@ -27,11 +27,12 @@ import difflib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,7 @@ MODEL_CRITIQUE = "claude-sonnet-4-6"     # Sonnet for critique scoring (cheaper)
 REFINEMENT_THRESHOLD = 0.72
 LOG_FILE = Path(__file__).parent / "rwql_log.jsonl"
 MEMORY_FILE = Path(__file__).parent / "rwql_memory.json"
+REPORT_FILE = Path(__file__).parent / "rwql_report.md"
 LOOP_INTERVAL_SECONDS = 1800  # 30 min default
 MAX_PATCHES_PER_PASS = 5
 MAX_FILE_CHARS = 12000  # Max chars to send in prompts (Opus handles large context well)
@@ -86,6 +88,7 @@ PROJECTS = {
             "check", "app/", "--output-format=json",
         ],
         "lint_cwd": Path("/home/nelly/calsanova/backend"),
+        "bandit_cmd": ["bandit", "-r", "app/", "-f", "json", "-q"],
         "typecheck_cmd": ["npx", "tsc", "--noEmit"],
         "venv": Path("/home/nelly/calsanova/backend/.venv"),
     },
@@ -95,6 +98,7 @@ PROJECTS = {
         "frontend": None,
         "packages": [],
         "test_cmd": ["python3", "-m", "pytest", "tests/", "-x", "-q", "--tb=short"],
+        "bandit_cmd": ["bandit", "-r", ".", "-f", "json", "-q", "--exclude", ".venv,tests"],
         "lint_cmd": None,
         "typecheck_cmd": None,
         "venv": None,
@@ -160,6 +164,7 @@ Respond ONLY with a JSON object:
 {
   "changes": [
     {
+      "file": "relative/path/to/file (omit if same as the primary file)",
       "search": "exact lines to find in the file",
       "replace": "replacement lines"
     }
@@ -167,7 +172,8 @@ Respond ONLY with a JSON object:
   "explanation": "one-line summary of what was changed"
 }
 
-If removing code, set "replace" to an empty string. Keep the number of changes minimal."""
+If removing code, set "replace" to an empty string. Keep the number of changes minimal.
+Most fixes only need changes in a single file. Only include other files if the fix genuinely requires it (e.g., renaming a function used by callers)."""
 
 CRITIQUE_SYSTEM = """You are RWQL's critic — the Ralph Wiggum Loop evaluator for code patches.
 
@@ -192,6 +198,27 @@ Respond ONLY with JSON:
   "minor_issues": ["list of small concerns"],
   "strengths": ["what the patch does well"],
   "needs_refinement": false
+}"""
+
+ADVERSARIAL_CRITIQUE_SYSTEM = """You are a hostile code reviewer. Your ONLY job is to find flaws in this patch.
+
+Assume the patch is broken until proven otherwise. Look for:
+- Edge cases the patch doesn't handle
+- Subtle bugs introduced by the change (off-by-one, null checks, type coercion)
+- Security issues (injection, XSS, IDOR, mass assignment)
+- Concurrency or race condition risks
+- Silent behavior changes in untouched code paths
+- Missing error handling for new failure modes
+- Broken callers — does anything else reference the changed code?
+
+If you find ANY critical flaw, set "has_critical_flaw" to true.
+If the patch is genuinely clean, say so — don't fabricate issues.
+
+Respond ONLY with JSON:
+{
+  "has_critical_flaw": true,
+  "flaws": ["specific flaw descriptions"],
+  "verdict": "one-line summary"
 }"""
 
 
@@ -278,6 +305,99 @@ def memory_context_for_prompt(memory: dict, project: str) -> str:
     if patterns:
         lines.append(f"Project notes: {patterns}")
     return "\n".join(lines) if lines else ""
+
+
+def detect_regressions(memory: dict, test_output: str, project: str) -> list[dict]:
+    """Check if any recently-patched files appear in test failure tracebacks."""
+    regressions = []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    recent_patches = [
+        p for p in memory.get("patches_applied", [])
+        if p.get("project") == project and p.get("date", "") >= cutoff
+    ]
+    if not recent_patches:
+        return []
+    for patch in recent_patches:
+        patch_file = patch.get("file", "")
+        # Extract just the filename for matching against tracebacks
+        filename = Path(patch_file).name
+        if filename and filename in test_output:
+            regressions.append({
+                "file": patch_file,
+                "issue_id": patch.get("issue_id", "?"),
+                "patched_date": patch.get("date", "?"),
+            })
+    return regressions
+
+
+def generate_report(
+    projects_data: list[dict],
+    costs: dict,
+    elapsed: float,
+    dry_run: bool,
+):
+    """Write a human-readable markdown report to rwql_report.md."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        f"# RWQL Report — {now}",
+        f"",
+        f"**Mode:** {'dry run' if dry_run else 'live'} | **Duration:** {elapsed:.1f}s",
+        f"**API:** {costs['api_calls']} calls | "
+        f"{costs['input_tokens']:,} in / {costs['output_tokens']:,} out | "
+        f"~${costs['estimated_cost_usd']:.4f}",
+        f"",
+    ]
+    for proj in projects_data:
+        name = proj["name"]
+        issues = proj.get("issues", [])
+        results = proj.get("results", [])
+        regressions = proj.get("regressions", [])
+        applied = [r for r in results if r.get("applied")]
+        rejected = [r for r in results if not r.get("applied")]
+
+        lines.append(f"## {name}")
+        lines.append(f"")
+        if not issues:
+            lines.append("No issues found — clean.")
+        else:
+            actionable = [i for i in issues if i.get("severity") in ("critical", "high")]
+            info = [i for i in issues if i.get("severity") in ("medium", "low")]
+            lines.append(f"**Issues:** {len(actionable)} actionable, {len(info)} informational")
+
+            if applied:
+                lines.append(f"")
+                lines.append(f"### Patches Applied ({len(applied)})")
+                for r in applied:
+                    issue = r.get("issue", {})
+                    lines.append(f"- `{issue.get('file', '?')}` — {issue.get('description', '?')[:100]} "
+                                 f"(score {r.get('score', '?'):.2f})")
+
+            if rejected:
+                lines.append(f"")
+                lines.append(f"### Patches Rejected/Skipped ({len(rejected)})")
+                for r in rejected:
+                    issue = r.get("issue", {})
+                    lines.append(f"- `{issue.get('file', '?')}` — {issue.get('description', '?')[:100]} "
+                                 f"(score {r.get('score', '?'):.2f})")
+
+            if info:
+                lines.append(f"")
+                lines.append(f"### Informational ({len(info)})")
+                for i in info[:10]:
+                    lines.append(f"- [{i.get('severity')}] `{i.get('file', '?')}:{i.get('line', '?')}` "
+                                 f"— {i.get('description', '?')[:100]}")
+
+        if regressions:
+            lines.append(f"")
+            lines.append(f"### ⚠ Regressions Detected ({len(regressions)})")
+            for reg in regressions:
+                lines.append(f"- `{reg['file']}` (patched {reg['patched_date'][:10]}, "
+                             f"issue {reg['issue_id']})")
+
+        lines.append(f"")
+
+    REPORT_FILE.write_text("\n".join(lines))
+    print(f"  Report written to {REPORT_FILE}")
 
 
 def run_cmd(cmd: list[str], cwd: Path, env: dict | None = None,
@@ -466,7 +586,27 @@ async def scan_project(project_name: str, config: dict,
     else:
         findings.append("=== NO BACKEND TESTS CONFIGURED ===")
 
-    # ── Parallel scan: typecheck + lint + static analysis ──
+    # ── Regression detection ──
+    if config.get("test_cmd"):
+        memory = load_memory()
+        test_output = f"{stdout}\n{stderr}" if 'stdout' in dir() else ""
+        regressions = detect_regressions(memory, test_output, project_name)
+        if regressions:
+            reg_text = "\n".join(
+                f"  - {r['file']} (patched {r['patched_date'][:10]})"
+                for r in regressions
+            )
+            print(f"  [regression] ⚠ {len(regressions)} recently-patched files in test output:")
+            print(reg_text)
+            findings.append(f"=== REGRESSION WARNING ===\n"
+                            f"These recently-patched files appear in test output:\n{reg_text}")
+            log_event({
+                "phase": "regression_detected",
+                "project": project_name,
+                "files": [r["file"] for r in regressions],
+            })
+
+    # ── Parallel scan: typecheck + lint + static analysis + security ──
 
     # Frontend typecheck
     async def run_typecheck():
@@ -527,8 +667,32 @@ async def scan_project(project_name: str, config: dict,
                 results.append(f"=== DEAD IMPORTS ({pkg.name}) ===\n{dead_ts}")
         return results
 
+    # Security scan (bandit)
+    async def run_security_scan():
+        if config.get("bandit_cmd") and shutil.which("bandit"):
+            print(f"  [scan] Running security scan for {project_name}...")
+            rc, stdout, stderr = run_cmd(
+                config["bandit_cmd"], cwd=backend, venv=venv
+            )
+            if stdout.strip():
+                try:
+                    bandit_data = json.loads(stdout)
+                    results = bandit_data.get("results", [])
+                    if results:
+                        bandit_lines = "\n".join(
+                            f"{r['filename']}:{r['line_number']}: [{r['test_id']}] "
+                            f"({r['issue_severity']}) {r['issue_text']}"
+                            for r in results[:20]
+                        )
+                        return f"=== SECURITY ISSUES ({len(results)}) ===\n{bandit_lines}"
+                except json.JSONDecodeError:
+                    if "No issues" not in stdout:
+                        return f"=== SECURITY SCAN OUTPUT ===\n{stdout[:2000]}"
+            return "=== SECURITY SCAN PASS ==="
+        return None
+
     scan_results = await asyncio.gather(
-        run_typecheck(), run_lint(), run_static_analysis()
+        run_typecheck(), run_lint(), run_static_analysis(), run_security_scan()
     )
 
     for result in scan_results:
@@ -580,9 +744,12 @@ async def scan_project(project_name: str, config: dict,
 # ── Patch Phase ──────────────────────────────────────────────────────────────
 
 def apply_search_replace(content: str, changes: list[dict]) -> str | None:
-    """Apply search/replace blocks to file content. Returns None if any search fails."""
+    """Apply search/replace blocks to file content. Returns None if any search fails.
+    Only applies changes that don't have a 'file' key or have a matching file key."""
     result = content
     for change in changes:
+        if change.get("file"):
+            continue
         search = change.get("search", "")
         replace = change.get("replace", "")
         if not search:
@@ -591,6 +758,42 @@ def apply_search_replace(content: str, changes: list[dict]) -> str | None:
             return None
         result = result.replace(search, replace, 1)
     return result
+
+
+def apply_multi_file_changes(
+    changes: list[dict],
+    primary_file: Path,
+    primary_content: str,
+    project_config: dict,
+) -> dict[Path, tuple[str, str]] | None:
+    """Apply search/replace changes across multiple files.
+    Returns {path: (original, patched)} or None if any search fails."""
+    file_changes: dict[Path, list[dict]] = {}
+    for change in changes:
+        rel = change.get("file")
+        if rel:
+            path = resolve_file_path(project_config, rel)
+            if not path:
+                return None
+        else:
+            path = primary_file
+        file_changes.setdefault(path, []).append(change)
+
+    results: dict[Path, tuple[str, str]] = {}
+    for path, path_changes in file_changes.items():
+        original = primary_content if path == primary_file else path.read_text(errors="ignore")
+        patched = original
+        for change in path_changes:
+            search = change.get("search", "")
+            replace = change.get("replace", "")
+            if not search:
+                continue
+            if search not in patched:
+                return None
+            patched = patched.replace(search, replace, 1)
+        if patched != original:
+            results[path] = (original, patched)
+    return results
 
 
 async def generate_patch(issue: dict, project_config: dict,
@@ -796,6 +999,47 @@ Generate improved search/replace blocks that address the critical issues."""
         except (json.JSONDecodeError, ValueError):
             break
 
+    # Adversarial pass: if patch passed standard critique, run a hostile review
+    if final_score >= REFINEMENT_THRESHOLD:
+        try:
+            adv_response = await client.messages.create(
+                model=MODEL_CRITIQUE,
+                max_tokens=2048,
+                system=ADVERSARIAL_CRITIQUE_SYSTEM,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Issue: {issue['description']}
+
+Diff:
+```
+{diff_for_prompt}
+```"""
+                }],
+            )
+            if cost_tracker:
+                cost_tracker.record(MODEL_CRITIQUE, adv_response)
+
+            adv_text = next(
+                (b.text for b in adv_response.content if hasattr(b, "text")), ""
+            )
+            adv_m = re.search(r"\{.*\}", adv_text, re.DOTALL)
+            if adv_m:
+                adv_data = json.loads(adv_m.group())
+                has_flaw = adv_data.get("has_critical_flaw", False)
+                adv_flaws = adv_data.get("flaws", [])
+                adv_verdict = adv_data.get("verdict", "")
+                if has_flaw:
+                    print(f"    [adversarial] FLAW FOUND: {adv_verdict}")
+                    for flaw in adv_flaws[:3]:
+                        print(f"      - {flaw[:100]}")
+                    final_score = max(final_score - 0.15, 0.0)
+                    final_critique["adversarial_flaws"] = adv_flaws
+                    final_critique["adversarial_verdict"] = adv_verdict
+                else:
+                    print(f"    [adversarial] Clean: {adv_verdict}")
+        except (json.JSONDecodeError, AttributeError, Exception) as e:
+            print(f"    [adversarial] Skipped: {e}")
+
     return current_patch, final_score, final_critique
 
 
@@ -892,6 +1136,7 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
     """One full quality pass: scan → patch → critique → apply → report."""
     start = time.time()
     all_results = []
+    projects_data = []
     cost_tracker = CostTracker()
     memory = load_memory()
 
@@ -905,11 +1150,16 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
         print(f"  RWQL Pass: {project_name}")
         print(f"{'='*60}")
 
+        proj_data = {"name": project_name, "issues": [], "results": [], "regressions": []}
+
         # 1. Scan
         issues = await scan_project(project_name, config, client, cost_tracker)
         if not issues:
             print(f"  No issues found in {project_name} — clean!")
+            projects_data.append(proj_data)
             continue
+
+        proj_data["issues"] = issues
 
         # Only process critical + high issues automatically; report others
         actionable = [i for i in issues if i["severity"] in ("critical", "high")]
@@ -1007,12 +1257,16 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
                     if backup.exists():
                         backup.unlink()
 
-            all_results.append({
+            result_entry = {
                 "project": project_name,
                 "issue": issue,
                 "score": score,
                 "applied": applied and not dry_run,
-            })
+            }
+            all_results.append(result_entry)
+            proj_data["results"].append(result_entry)
+
+        projects_data.append(proj_data)
 
     # Persist memory
     save_memory(memory)
@@ -1039,6 +1293,9 @@ async def run_quality_pass(projects: list[str], dry_run: bool,
         "dry_run": dry_run,
         "cost": costs,
     })
+
+    # Generate report
+    generate_report(projects_data, costs, elapsed, dry_run)
 
 
 async def main():
