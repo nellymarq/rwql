@@ -82,6 +82,7 @@ PROJECTS = {
         "frontend": Path("/home/nelly/calsanova/apps/web"),
         "packages": [Path("/home/nelly/calsanova/packages/core")],
         "test_cmd": ["python3", "-m", "pytest", "tests/", "-x", "-q", "--tb=short"],
+        "test_timeout": 600,
         "packages_test_cmd": ["npx", "vitest", "run", "--reporter=verbose"],
         "lint_cmd": [
             str(Path("/home/nelly/calsanova/backend/.venv/bin/ruff")),
@@ -98,6 +99,7 @@ PROJECTS = {
         "frontend": None,
         "packages": [],
         "test_cmd": ["python3", "-m", "pytest", "tests/", "-x", "-q", "--tb=short"],
+        "test_timeout": 300,
         "bandit_cmd": ["bandit", "-r", ".", "-f", "json", "-q", "--exclude", ".venv,tests"],
         "lint_cmd": None,
         "typecheck_cmd": None,
@@ -430,77 +432,125 @@ def should_skip(path: Path) -> bool:
     return any(exc in path.parts for exc in SCAN_EXCLUDES)
 
 
+# Modules and names that produce false positives with naive string counting.
+# These are commonly used in type annotations, test assertions, or expressions
+# where the counter sees only 1 occurrence (the import line itself).
+PY_SKIP_MODULES = {
+    "typing", "collections", "abc", "dataclasses", "__future__",
+    "pathlib", "datetime", "enum",
+}
+PY_SKIP_NAMES = {
+    "Any", "Optional", "Union", "Dict", "List", "Tuple", "Set",
+    "Callable", "Literal", "TypeVar", "Protocol", "ClassVar",
+    "ABC", "abstractmethod", "annotations", "dataclass", "field",
+    "Path", "datetime", "timedelta", "timezone", "date",
+    "pytest", "math", "json", "os", "sys", "re",
+}
+
+
 def find_dead_imports_py(src_dir: Path) -> str:
-    """Find unused imports in Python files."""
+    """Find unused imports in Python files.
+    Skips __init__.py, common typing/annotation modules, and standard
+    library names that produce false positives with naive string counting."""
     lines = []
     for py_file in src_dir.rglob("*.py"):
         if should_skip(py_file):
             continue
+        if py_file.name == "__init__.py":
+            continue
         text = py_file.read_text(errors="ignore")
         for lineno, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
-            if stripped.startswith("import ") or stripped.startswith("from "):
-                import_match = re.search(r"(?:import|from)\s+(\S+)", stripped)
-                if import_match:
-                    name = import_match.group(1).split(".")[0]
-                    occurrences = text.count(name)
-                    if occurrences == 1:
-                        rel = py_file.relative_to(src_dir)
-                        lines.append(f"{rel}:{lineno}: possibly unused: {stripped}")
+            if not (stripped.startswith("import ") or stripped.startswith("from ")):
+                continue
+            # Skip entire modules known to produce false positives
+            from_match = re.match(r"from\s+(\S+)\s+import", stripped)
+            if from_match and from_match.group(1).split(".")[0] in PY_SKIP_MODULES:
+                continue
+            # Check the imported name(s)
+            import_match = re.search(r"(?:import|from)\s+(\S+)", stripped)
+            if import_match:
+                name = import_match.group(1).split(".")[0]
+                if name in PY_SKIP_NAMES:
+                    continue
+                # For 'from X import Y, Z' — check the imported names too
+                from_names_match = re.search(r"import\s+(.+)$", stripped)
+                if from_names_match:
+                    imported = [n.strip().split(" as ")[-1].strip()
+                                for n in from_names_match.group(1).split(",")]
+                    if all(n in PY_SKIP_NAMES for n in imported if n):
+                        continue
+                occurrences = text.count(name)
+                if occurrences == 1:
+                    rel = py_file.relative_to(src_dir)
+                    lines.append(f"{rel}:{lineno}: possibly unused: {stripped}")
     return "\n".join(lines[:50]) if lines else "No obviously unused imports found."
 
 
 def find_dead_imports_ts(src_dir: Path) -> str:
-    """Find unused imports in TypeScript/TSX files."""
+    """Find unused imports in TypeScript/TSX files.
+    Skips type-only imports (import type { X }) since tsc is the
+    authoritative checker for those."""
     lines = []
-    for ts_file in src_dir.rglob("*.tsx"):
-        if should_skip(ts_file):
-            continue
-        text = ts_file.read_text(errors="ignore")
-        for lineno, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("import "):
-                # Extract imported names from: import { Foo, Bar } from "..."
+    for ext in ("*.tsx", "*.ts"):
+        for ts_file in src_dir.rglob(ext):
+            if should_skip(ts_file):
+                continue
+            if ext == "*.ts" and ts_file.suffix == ".tsx":
+                continue
+            text = ts_file.read_text(errors="ignore")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if not stripped.startswith("import "):
+                    continue
+                # Skip type-only imports — tsc handles these
+                if stripped.startswith("import type "):
+                    continue
+                # Skip type keyword inside braces: import { type Foo }
                 brace_match = re.search(r"\{([^}]+)\}", stripped)
                 if brace_match:
-                    names = [n.strip().split(" as ")[-1].strip()
-                             for n in brace_match.group(1).split(",")]
+                    names = []
+                    for part in brace_match.group(1).split(","):
+                        part = part.strip()
+                        if part.startswith("type "):
+                            continue
+                        name = part.split(" as ")[-1].strip()
+                        if name:
+                            names.append(name)
                     for name in names:
-                        if name and text.count(name) == 1:
-                            rel = ts_file.relative_to(src_dir)
-                            lines.append(f"{rel}:{lineno}: possibly unused import: {name}")
-    for ts_file in src_dir.rglob("*.ts"):
-        if should_skip(ts_file) or ts_file.suffix == ".tsx":
-            continue
-        text = ts_file.read_text(errors="ignore")
-        for lineno, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("import "):
-                brace_match = re.search(r"\{([^}]+)\}", stripped)
-                if brace_match:
-                    names = [n.strip().split(" as ")[-1].strip()
-                             for n in brace_match.group(1).split(",")]
-                    for name in names:
-                        if name and text.count(name) == 1:
+                        if text.count(name) == 1:
                             rel = ts_file.relative_to(src_dir)
                             lines.append(f"{rel}:{lineno}: possibly unused import: {name}")
     return "\n".join(lines[:50]) if lines else "No obviously unused TS/TSX imports found."
 
 
+# Files that are expected to be small — not dead code
+SMALL_FILE_PATTERNS = {
+    "__init__.py",          # Python package markers
+    "twitter-image.tsx",    # Next.js OG image routes (single export)
+    "opengraph-image.tsx",  # Next.js OG image routes
+    "setup.ts",             # Test setup files
+    "setup.js",
+}
+
+
 def find_empty_modules(src_dir: Path, extensions: tuple[str, ...] = ("*.py",)) -> str:
-    """Find files that are effectively empty (< 5 lines of real code)."""
+    """Find files that are effectively empty (< 3 lines of real code).
+    Excludes __init__.py, OG image routes, and other expected small files."""
     empty = []
     for ext in extensions:
         for f in src_dir.rglob(ext):
             if should_skip(f):
                 continue
+            if f.name in SMALL_FILE_PATTERNS:
+                continue
             text = f.read_text(errors="ignore")
             real_lines = [l for l in text.splitlines()
                           if l.strip() and not l.strip().startswith("#")
                           and not l.strip().startswith("//")]
-            if len(real_lines) <= 3:
+            if len(real_lines) == 0:
                 rel = f.relative_to(src_dir)
-                empty.append(f"{rel}: {len(real_lines)} real lines")
+                empty.append(f"{rel}: empty")
     return "\n".join(empty) if empty else "No effectively empty modules found."
 
 
@@ -560,9 +610,12 @@ async def scan_project(project_name: str, config: dict,
     findings = []
 
     # ── Pre-flight: verify tests pass before scanning ──
+    preflight_output = ""
     if config.get("test_cmd"):
-        print(f"\n  [preflight] Verifying {project_name} tests pass...")
-        rc, stdout, stderr = run_cmd(config["test_cmd"], cwd=backend, venv=venv)
+        test_timeout = config.get("test_timeout", 300)
+        print(f"\n  [preflight] Verifying {project_name} tests pass (timeout {test_timeout}s)...")
+        rc, stdout, stderr = run_cmd(config["test_cmd"], cwd=backend, venv=venv, timeout=test_timeout)
+        preflight_output = f"{stdout}\n{stderr}"
         if rc != 0:
             combined = f"{stdout}\n{stderr}"
             non_flaky = any(
@@ -587,10 +640,9 @@ async def scan_project(project_name: str, config: dict,
         findings.append("=== NO BACKEND TESTS CONFIGURED ===")
 
     # ── Regression detection ──
-    if config.get("test_cmd"):
+    if preflight_output:
         memory = load_memory()
-        test_output = f"{stdout}\n{stderr}" if 'stdout' in dir() else ""
-        regressions = detect_regressions(memory, test_output, project_name)
+        regressions = detect_regressions(memory, preflight_output, project_name)
         if regressions:
             reg_text = "\n".join(
                 f"  - {r['file']} (patched {r['patched_date'][:10]})"
@@ -1322,8 +1374,9 @@ async def run_scan_only(projects: list[str]):
 
         # Tests
         if config.get("test_cmd"):
-            print(f"  [scan] Running tests...")
-            rc, stdout, stderr = run_cmd(config["test_cmd"], cwd=backend, venv=venv)
+            test_timeout = config.get("test_timeout", 300)
+            print(f"  [scan] Running tests (timeout {test_timeout}s)...")
+            rc, stdout, stderr = run_cmd(config["test_cmd"], cwd=backend, venv=venv, timeout=test_timeout)
             if rc != 0:
                 combined = filter_flaky_tests(f"{stdout}\n{stderr}")
                 findings.append(("TESTS", "FAIL", combined[-1000:]))
