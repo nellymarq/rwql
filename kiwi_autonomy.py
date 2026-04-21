@@ -38,14 +38,10 @@ from typing import Any
 import anthropic
 
 # ── Paths ──────────────────────────────────────────────────────────────────
+# Kiwi tools/agents/memory now come from the kiwi-core pip package —
+# no sys.path manipulation needed.
 
-KIWI_ROOT = Path("/home/nelly/kiwi")
-sys.path.insert(0, str(KIWI_ROOT))
-
-# Also need rwql on path for kwql import
 RWQL_ROOT = Path(__file__).parent
-sys.path.insert(0, str(RWQL_ROOT))
-
 KIWI_DIR = Path.home() / ".kiwi"
 AGENDA_FILE = KIWI_DIR / "agenda.json"
 LOG_FILE = RWQL_ROOT / "kiwi_autonomy_log.jsonl"
@@ -240,8 +236,8 @@ async def rationalize(
     Self-reflect on Kiwi's knowledge state.
     Returns (gaps, summary).
     """
-    from memory.store import KiwiMemory
-    from memory.profile import UserProfile
+    from kiwi_core.memory.store import KiwiMemory
+    from kiwi_core.memory.profile import UserProfile
 
     mem = KiwiMemory()
     profile = UserProfile()
@@ -343,7 +339,7 @@ async def build_agenda(
     if not gaps:
         return []
 
-    from memory.profile import UserProfile
+    from kiwi_core.memory.profile import UserProfile
     profile = UserProfile()
     profile_block = profile.to_summary() if profile.is_complete() else "(no profile)"
 
@@ -422,11 +418,11 @@ async def research_item(
         return item
 
     try:
-        from agents.orchestrator import KiwiOrchestrator
-        from tools.pubmed import PubMedClient
-        from tools.openalex import OpenAlexClient
-        from memory.store import KiwiMemory
-        from memory.profile import UserProfile
+        from kiwi_core.agents.orchestrator import KiwiOrchestrator
+        from kiwi_core.tools.pubmed import PubMedClient
+        from kiwi_core.tools.openalex import OpenAlexClient
+        from kiwi_core.memory.store import KiwiMemory
+        from kiwi_core.memory.profile import UserProfile
 
         mem = KiwiMemory()
         profile = UserProfile()

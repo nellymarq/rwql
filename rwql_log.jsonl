@@ -6,3 +6,11 @@
 {"ts": "2026-03-01T05:29:08.944781+00:00", "phase": "patch_applied", "project": "kiwi", "file": "/home/nelly/kiwi/agents/critique.py", "issue": "agents-critique-unused-anthropic", "score": 0.95}
 {"ts": "2026-03-01T05:30:15.321432+00:00", "phase": "patch_applied", "project": "kiwi", "file": "/home/nelly/kiwi/agents/orchestrator.py", "issue": "agents-orchestrator-unused-asyncio", "score": 0.95}
 {"ts": "2026-03-01T05:30:15.321713+00:00", "phase": "pass_complete", "projects": ["kiwi"], "patches_attempted": 2, "elapsed_s": 129.9, "dry_run": false}
+{"ts": "2026-04-15T18:10:45.569614+00:00", "phase": "scan_only_complete", "projects": ["scythene"], "elapsed_s": 4.2}
+{"ts": "2026-04-15T18:16:16.539194+00:00", "phase": "scan_only_complete", "projects": ["calsanova", "kiwi", "scythene"], "elapsed_s": 312.2}
+{"ts": "2026-04-15T18:24:38.299910+00:00", "phase": "scan_only_complete", "projects": ["scythene"], "elapsed_s": 3.1}
+{"ts": "2026-04-15T18:24:47.969418+00:00", "phase": "scan_only_complete", "projects": ["kiwi"], "elapsed_s": 2.0}
+{"ts": "2026-04-15T18:25:27.355284+00:00", "phase": "scan_only_complete", "projects": ["kiwi"], "elapsed_s": 2.0}
+{"ts": "2026-04-15T18:35:46.668450+00:00", "phase": "scan_only_complete", "projects": ["calsanova", "kiwi", "scythene"], "elapsed_s": 609.9}
+{"ts": "2026-04-15T19:56:49.648144+00:00", "phase": "scan_only_complete", "projects": ["kiwi"], "elapsed_s": 2.0}
+{"ts": "2026-04-17T03:40:06.180615+00:00", "phase": "scan_only_complete", "projects": ["kiwi"], "elapsed_s": 2.6}

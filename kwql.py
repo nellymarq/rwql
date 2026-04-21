@@ -47,9 +47,7 @@ LOOP_INTERVAL_SECONDS = 1800  # 30 min
 
 LOG_FILE = Path(__file__).parent / "kwql_log.jsonl"
 MEMORY_JSON = Path.home() / ".kiwi" / "memory.json"
-
-# Add Kiwi to path so we can import KiwiMemory
-sys.path.insert(0, str(Path("/home/nelly/kiwi")))
+# KiwiMemory now comes from kiwi-core pip package — no sys.path needed.
 
 
 # ── Prompts ─────────────────────────────────────────────────────────────────
@@ -420,7 +418,7 @@ def apply_entry(entry: dict, score: float, dry_run: bool) -> bool:
         print(f"      Content ({len(knowledge)} chars): {knowledge[:200]}...")
         return True
 
-    from memory.store import KiwiMemory
+    from kiwi_core.memory.store import KiwiMemory
     mem = KiwiMemory()
     mem.add_semantic(topic, knowledge)
     print(f"    [applied] '{topic}' → semantic memory ({len(knowledge)} chars, score={score:.2f})")
