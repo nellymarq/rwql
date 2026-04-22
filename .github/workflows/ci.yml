@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  lint-and-compile:
+    name: Lint + Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: kiwi-core pin drift guard
+        run: |
+          pin=$(grep -E '^kiwi-core @ git\+' requirements.txt || true)
+          if [ -z "$pin" ]; then
+            echo "::error::kiwi-core not pinned in requirements.txt"
+            exit 1
+          fi
+          if ! echo "$pin" | grep -qE '@v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::kiwi-core pin must be a vN.N.N tag (not a branch/sha). Got: $pin"
+            exit 1
+          fi
+          echo "kiwi-core pin OK: $pin"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Compile all scripts
+        run: python -m py_compile *.py
+
+      - name: Lint (ruff defaults)
+        run: ruff check . || echo "::warning::ruff found issues — non-blocking for v1"
+        continue-on-error: true
